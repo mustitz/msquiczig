@@ -1,6 +1,7 @@
 pub const WrapperError = error{
     OpenVersionNotFound,
     CloseNotFound,
+    Bug,
 };
 
 // Base System Errors
