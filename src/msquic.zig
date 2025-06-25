@@ -3,6 +3,8 @@ const std = @import("std");
 const MsQuicError = @import("errors.zig").MsQuicError;
 const C = @import("header.zig").C;
 
+const Registration = @import("reg.zig").Registration;
+
 pub const MsQuic = struct {
     lib: ?std.DynLib = null,
     open_version_export_fn: ?C.MsQuicOpenVersionFn = null,
@@ -40,6 +42,22 @@ pub const MsQuic = struct {
             self.lib = null;
         }
     }
+
+    pub fn openReg(self: *MsQuic, app_name: [*:0]const u8, profile: C.ExecutionProfile) !Registration {
+        const config = C.RegConfig{
+            .app_name = app_name,
+            .execution_profile = profile,
+        };
+        var handle: C.HQUIC = undefined;
+        const status = self.api.reg_open(&config, &handle);
+        if (C.StatusCode.failed(status)) return C.StatusCode.toError(status);
+
+        return Registration{
+            .handle = handle,
+            .msquic = self
+        };
+    }
+
 };
 
 test "test libmsquic.so loading" {

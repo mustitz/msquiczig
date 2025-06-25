@@ -8,6 +8,7 @@ const Location = std.builtin.SourceLocation;
 const Atom = quarkz.Atom;
 const Cosmos = quarkz.Cosmos;
 const MsQuic = msquiczig.MsQuic;
+const Registration = msquiczig.Registration;
 
 var stdout_tracer = quarkz.cosmos.FileRecorder{
     .min_level = .trace,
@@ -17,6 +18,7 @@ const Client = struct {
     allocator: Allocator,
     cosmos: *Cosmos,
     msquic: *MsQuic,
+    reg: Registration,
 
     fn init(allocator: Allocator) !Client {
         const new_cosmos = try Cosmos.create(allocator);
@@ -46,10 +48,15 @@ const Client = struct {
         errdefer new_msquic.deinit();
         atom.?.debug(@src(), "MsQuic library loaded successfully", .{});
 
+        const new_reg = try new_msquic.openReg("client-example", .low_latency);
+        errdefer new_reg.close();
+        atom.?.debug(@src(), "Registration opened successfully", .{});
+
         return Client{
             .allocator = allocator,
             .cosmos = new_cosmos,
             .msquic = new_msquic,
+            .reg = new_reg,
         };
     }
 
@@ -57,6 +64,9 @@ const Client = struct {
         {
             const atom = self.enter(@src(), "Client.deinit");
             defer self.leave(@src(), atom);
+
+            self.reg.close();
+            atom.?.debug(@src(), "Registration closed", .{});
 
             self.msquic.deinit();
             self.allocator.destroy(self.msquic);
