@@ -7,6 +7,7 @@ pub const MsQuic = struct {
     lib: ?std.DynLib = null,
     open_version_export_fn: ?C.MsQuicOpenVersionFn = null,
     close_export_fn: ?C.MsQuicCloseFn = null,
+    api: *const C.ApiTable = undefined,
 
     pub fn init(self: *MsQuic, path: []const u8) !void {
         var lib = try std.DynLib.open(path);
@@ -17,12 +18,21 @@ pub const MsQuic = struct {
         const close = lib.lookup(C.MsQuicCloseFn, "MsQuicClose")
             orelse return MsQuicError.QzCloseNotFound;
 
+        var api: ?*const C.ApiTable = null;
+        const status = open_version(2, &api);
+        if (C.StatusCode.failed(status)) return C.StatusCode.toError(status);
+
+        self.api = api orelse return MsQuicError.QzBug;
         self.open_version_export_fn = open_version;
         self.close_export_fn = close;
         self.lib = lib;
     }
 
     pub fn deinit(self: *MsQuic) void {
+        if (self.close_export_fn) |close_fn| {
+            close_fn(self.api);
+        }
+
         self.open_version_export_fn = null;
         self.close_export_fn = null;
         if (self.lib) |*lib| {
