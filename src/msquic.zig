@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const MsQuicError = @import("errors.zig").MsQuicError;
 const C = @import("header.zig").C;
 
 pub const MsQuic = struct {
@@ -11,11 +12,10 @@ pub const MsQuic = struct {
         var lib = try std.DynLib.open(path);
         errdefer lib.close();
 
-        const open_version = lib.lookup(C.MsQuicOpenVersionFn, "MsQuicOpenVersion");
-        const close = lib.lookup(C.MsQuicCloseFn, "MsQuicClose");
-
-        if (open_version == null) return error.MsQuicOpenVersionNotFound;
-        if (close == null) return error.MsQuicCloseNotFound;
+        const open_version = lib.lookup(C.MsQuicOpenVersionFn, "MsQuicOpenVersion")
+            orelse return MsQuicError.QzOpenVersionNotFound;
+        const close = lib.lookup(C.MsQuicCloseFn, "MsQuicClose")
+            orelse return MsQuicError.QzCloseNotFound;
 
         self.open_version_export_fn = open_version;
         self.close_export_fn = close;
