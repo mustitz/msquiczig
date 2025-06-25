@@ -3,7 +3,14 @@
     .version = "0.0.1",
     .fingerprint = 0xfb342781ba29c27d,
     .minimum_zig_version = "0.15.0",
-    .dependencies = .{},
+
+    .dependencies = .{
+        .quarkz = .{
+            .url = "https://github.com/mustitz/quarkz/archive/v0.0.1.tar.gz",
+            .hash = "1220652ab9b0acdb93889da3053e9b5412862f66cbf43da108815726f0445a5926b0",
+        },
+    },
+
     .paths = .{
         "build.zig",
         "build.zig.zon",
