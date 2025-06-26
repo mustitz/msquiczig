@@ -9,6 +9,11 @@ const Atom = quarkz.Atom;
 const Cosmos = quarkz.Cosmos;
 const MsQuic = msquiczig.MsQuic;
 const Registration = msquiczig.Registration;
+const Configuration = msquiczig.Configuration;
+const Settings = msquiczig.Settings;
+
+const IDLE_TIMEOUT = 1000;
+const ALPNS = [_][]const u8{ "sample"};
 
 var stdout_tracer = quarkz.cosmos.FileRecorder{
     .min_level = .trace,
@@ -19,6 +24,7 @@ const Client = struct {
     cosmos: *Cosmos,
     msquic: *MsQuic,
     reg: Registration,
+    conf: Configuration,
 
     fn init(allocator: Allocator) !Client {
         const new_cosmos = try Cosmos.create(allocator);
@@ -52,11 +58,21 @@ const Client = struct {
         errdefer new_reg.close();
         atom.?.debug(@src(), "Registration opened successfully", .{});
 
+        var settings = Settings{};
+        _ = settings
+            .withIdleTimeoutMs(IDLE_TIMEOUT)
+            ;
+
+        const new_conf = try new_reg.openConf(&ALPNS, &settings, null);
+        errdefer new_conf.close();
+        atom.?.debug(@src(), "Configuration opened successfully", .{});
+
         return Client{
             .allocator = allocator,
             .cosmos = new_cosmos,
             .msquic = new_msquic,
             .reg = new_reg,
+            .conf = new_conf,
         };
     }
 
@@ -64,6 +80,9 @@ const Client = struct {
         {
             const atom = self.enter(@src(), "Client.deinit");
             defer self.leave(@src(), atom);
+
+            self.conf.close();
+            atom.?.debug(@src(), "Configuration closed", .{});
 
             self.reg.close();
             atom.?.debug(@src(), "Registration closed", .{});
