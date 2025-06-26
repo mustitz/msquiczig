@@ -1,4 +1,5 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 
 const MsQuicError = @import("errors.zig").MsQuicError;
 const C = @import("header.zig").C;
@@ -6,12 +7,13 @@ const C = @import("header.zig").C;
 const Registration = @import("reg.zig").Registration;
 
 pub const MsQuic = struct {
+    allocator: Allocator = undefined,
     lib: ?std.DynLib = null,
     open_version_export_fn: ?C.MsQuicOpenVersionFn = null,
     close_export_fn: ?C.MsQuicCloseFn = null,
     api: *const C.ApiTable = undefined,
 
-    pub fn init(self: *MsQuic, path: []const u8) !void {
+    pub fn init(self: *MsQuic, allocator: Allocator, path: []const u8) !void {
         var lib = try std.DynLib.open(path);
         errdefer lib.close();
 
@@ -25,6 +27,7 @@ pub const MsQuic = struct {
         if (C.StatusCode.failed(status)) return C.StatusCode.toError(status);
 
         self.api = api orelse return MsQuicError.QzBug;
+        self.allocator = allocator;
         self.open_version_export_fn = open_version;
         self.close_export_fn = close;
         self.lib = lib;
@@ -68,5 +71,5 @@ test "test libmsquic.so loading" {
 
     var msquic = MsQuic{};
     defer msquic.deinit();
-    try msquic.init(libmsquic_path);
+    try msquic.init(std.testing.allocator, libmsquic_path);
 }
