@@ -44,7 +44,7 @@ const Client = struct {
         errdefer allocator.destroy(new_msquic);
 
         new_msquic.* = MsQuic{};
-        try new_msquic.init(libmsquic_path);
+        try new_msquic.init(allocator, libmsquic_path);
         errdefer new_msquic.deinit();
         atom.?.debug(@src(), "MsQuic library loaded successfully", .{});
 
