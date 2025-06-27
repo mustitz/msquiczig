@@ -2,6 +2,7 @@ const C = @import("header.zig").C;
 const MsQuic = @import("msquic.zig").MsQuic;
 const Configuration = @import("conf.zig").Configuration;
 const Settings = @import("settings.zig").Settings;
+const Connection = @import("conn.zig").Connection;
 
 pub const Registration = struct {
     handle: C.HQUIC,
@@ -63,5 +64,33 @@ pub const Registration = struct {
            .msquic = self.msquic,
            .data = data,
         };
+    }
+
+    pub fn openConn(
+        self: *const Registration,
+        ihandler: ?*const Connection.IHandler,
+        data: ?*anyopaque,
+    ) !*Connection {
+        const conn = try self.msquic.allocator.create(Connection);
+        errdefer self.msquic.allocator.destroy(conn);
+
+        var handle: C.HQUIC = undefined;
+        const status = self.msquic.api.conn_open(
+            self.handle,
+            Connection.cb,
+            conn,
+            &handle
+        );
+
+        if (C.StatusCode.failed(status)) return C.StatusCode.toError(status);
+
+        conn.* = Connection{
+            .handle = handle,
+            .msquic = self.msquic,
+            .ihandler = if (ihandler) |h| h.* else .{},
+            .data = data,
+        };
+
+        return conn;
     }
 };
