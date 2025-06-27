@@ -11,6 +11,8 @@ const MsQuic = msquiczig.MsQuic;
 const Registration = msquiczig.Registration;
 const Configuration = msquiczig.Configuration;
 const Settings = msquiczig.Settings;
+const CredConfig = msquiczig.CredConfig;
+const CredFlags = msquiczig.CredFlags;
 
 const IDLE_TIMEOUT = 1000;
 const ALPNS = [_][]const u8{ "sample"};
@@ -26,7 +28,7 @@ const Client = struct {
     reg: Registration,
     conf: Configuration,
 
-    fn init(allocator: Allocator) !Client {
+    fn init(allocator: Allocator, unsecure: bool) !Client {
         const new_cosmos = try Cosmos.create(allocator);
         errdefer new_cosmos.destroy();
 
@@ -66,6 +68,18 @@ const Client = struct {
         const new_conf = try new_reg.openConf(&ALPNS, &settings, null);
         errdefer new_conf.close();
         atom.?.debug(@src(), "Configuration opened successfully", .{});
+
+        var cred = CredConfig{
+            .cred_type = .none,
+            .flags = CredFlags{ .client = true },
+        };
+
+        if (unsecure) {
+            cred.flags.no_cert_validation = true;
+        }
+
+        try new_conf.loadCred(&cred);
+        atom.?.debug(@src(), "Configuration credentials loaded successfully", .{});
 
         return Client{
             .allocator = allocator,
@@ -131,7 +145,7 @@ pub fn main() !void {
         }
     }
 
-    var client = try Client.init(gpa.allocator());
+    var client = try Client.init(gpa.allocator(), true);
     defer client.deinit();
     client.run();
 }
