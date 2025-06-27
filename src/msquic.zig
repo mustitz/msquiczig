@@ -6,6 +6,36 @@ const C = @import("header.zig").C;
 
 const Registration = @import("reg.zig").Registration;
 
+pub const Addr = struct {
+    internal: std.net.Address,
+
+    pub fn init() Addr {
+        return Addr{ .internal = std.mem.zeroes(std.net.Address) };
+    }
+
+    pub fn setFamily(self: *Addr, family: C.AddressFamily) void {
+        self.internal.any.family = @intFromEnum(family);
+    }
+
+    pub fn setPort(self: *Addr, port: u16) void {
+       switch (self.internal.any.family) {
+           std.posix.AF.INET => self.internal.in.setPort(port),
+           std.posix.AF.INET6 => self.internal.in6.setPort(port),
+           std.posix.AF.UNSPEC => self.internal.in.setPort(port),
+           else => unreachable,
+       }
+    }
+
+    pub fn format(
+        self: Addr,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        out_stream: anytype,
+    ) !void {
+        return self.internal.format(fmt, options, out_stream);
+    }
+};
+
 pub const MsQuic = struct {
     allocator: Allocator = undefined,
     lib: ?std.DynLib = null,
