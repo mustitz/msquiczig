@@ -8,18 +8,117 @@ const Location = std.builtin.SourceLocation;
 const Atom = quarkz.Atom;
 const Cosmos = quarkz.Cosmos;
 const MsQuic = msquiczig.MsQuic;
+const MsQuicError = msquiczig.MsQuicError;
+const InternalErrorCode = msquiczig.InternalErrorCode;
 const Registration = msquiczig.Registration;
 const Configuration = msquiczig.Configuration;
 const Settings = msquiczig.Settings;
 const CredConfig = msquiczig.CredConfig;
 const CredFlags = msquiczig.CredFlags;
+const Connection = msquiczig.Connection;
 
 const IDLE_TIMEOUT = 1000;
 const ALPNS = [_][]const u8{ "sample"};
+const SERVER_NAME = "localhost";
+const SERVER_PORT = 3690;
 
 var stdout_tracer = quarkz.cosmos.FileRecorder{
     .min_level = .trace,
 };
+
+const ClientConnHandler = struct {
+    fn onConnected(
+        conn: *Connection,
+        session_resumed: bool,
+        negotiated_alpn: []const u8,
+    ) anyerror!void {
+        const client: *Client = @ptrCast(@alignCast(conn.data));
+        const atom = client.enter(@src(), "Client.Conn.onConnected");
+        defer client.leave(@src(), atom);
+
+        const conn_addr = @intFromPtr(conn.handle);
+        atom.?.infoFmt(@src(),
+            "[0x{x}] Connected: alpn={s}, resumed={}",
+            .{conn_addr, negotiated_alpn, session_resumed}, .{});
+
+        // TBD: ClientSend(Connection);
+        atom.?.notice(@src(), "TBD: ClientSend implementation", .{});
+    }
+
+    fn onShutdownInitiatedByTransport(
+        conn: *Connection,
+        status: ?anyerror,
+        error_code: InternalErrorCode,
+    ) anyerror!void {
+        const client: *Client = @ptrCast(@alignCast(conn.data));
+        const atom = client.enter(@src(), "Client.Conn.onShutdownInitiatedByTransport");
+        defer client.leave(@src(), atom);
+
+        const conn_addr = @intFromPtr(conn.handle);
+        if (status) |err| {
+            if (err == MsQuicError.QzConnIdle) {
+                atom.?.infoFmt(@src(), "[0x{x}] Successfully shut down on idle, error_code: {}",
+                    .{conn_addr, error_code}, .{});
+            } else {
+                atom.?.warnFmt(@src(), "[0x{x}] Shut down by transport, status: {any}, error_code: {}",
+                    .{conn_addr, err, error_code}, .{});
+            }
+        } else {
+            atom.?.warnFmt(@src(), "[0x{x}] Shut down by transport, no status, error_code: {}",
+                .{conn_addr, error_code}, .{});
+        }
+    }
+
+    fn onShutdownInitiatedByPeer(
+        conn: *Connection,
+        error_code: InternalErrorCode,
+    ) anyerror!void {
+        const client: *Client = @ptrCast(@alignCast(conn.data));
+        const atom = client.enter(@src(), "Client.Conn.onShutdownInitiatedByPeer");
+        defer client.leave(@src(), atom);
+
+        const conn_addr = @intFromPtr(conn.handle);
+        atom.?.warnFmt(@src(), "[0x{x}] Shut down by peer, error_code: {}",
+            .{conn_addr, error_code}, .{});
+    }
+
+    fn onShutdownComplete(
+        conn: *Connection,
+        handshake_completed: bool,
+        peer_acknowledged_shutdown: bool,
+        app_close_in_progress: bool,
+    ) anyerror!void {
+        const client: *Client = @ptrCast(@alignCast(conn.data));
+        const atom = client.enter(@src(), "Client.Conn.onShutdownComplete");
+        defer client.leave(@src(), atom);
+
+        const conn_addr = @intFromPtr(conn.handle);
+        atom.?.infoFmt(@src(),
+            "[0x{x}] all done: handshake_completed: {}, peer_acknowledged_shutdown: {}, app_close_in_progress: {}",
+            .{conn_addr, handshake_completed, peer_acknowledged_shutdown, app_close_in_progress}, .{});
+
+        if (!app_close_in_progress) {
+            conn.destroy();
+            atom.?.debug(@src(), "Connection closed & destroyed", .{});
+        }
+    }
+
+    fn onIdealProcessorChanged(
+        conn: *Connection,
+        ideal_processor: u16,
+        partition_index: u16,
+    ) anyerror!void {
+        const client: *Client = @ptrCast(@alignCast(conn.data));
+        const atom = client.enter(@src(), "Client.Conn.onIdealProcessorChanged");
+        defer client.leave(@src(), atom);
+
+        const conn_addr = @intFromPtr(conn.handle);
+        atom.?.infoFmt(@src(),
+            "[0x{x}] Ideal Processor is: {}, Partition Index: {}",
+            .{conn_addr, ideal_processor, partition_index}, .{});
+    }
+};
+
 
 const Client = struct {
     allocator: Allocator,
@@ -123,11 +222,26 @@ const Client = struct {
         }
     }
 
-    fn run(self: *Client) void {
+    fn run(self: *Client) !void {
         const atom = self.enter(@src(), "Client.run");
         defer self.leave(@src(), atom);
 
-        atom.?.notice(@src(), "Running!", .{});
+        const client_conn_handler = Connection.IHandler{
+            .onConnected = ClientConnHandler.onConnected,
+            .onShutdownInitiatedByTransport = ClientConnHandler.onShutdownInitiatedByTransport,
+            .onShutdownInitiatedByPeer = ClientConnHandler.onShutdownInitiatedByPeer,
+            .onShutdownComplete = ClientConnHandler.onShutdownComplete,
+            .onIdealProcessorChanged = ClientConnHandler.onIdealProcessorChanged,
+        };
+
+        const conn = try self.reg.openConn(&client_conn_handler, self);
+        errdefer {
+            conn.destroy();
+        }
+        atom.?.debug(@src(), "Connection opened successfully", .{});
+
+        try conn.start(self.conf, .unspec, SERVER_NAME, SERVER_PORT);
+        atom.?.debug(@src(), "Connection started successfully", .{});
     }
 };
 
@@ -147,5 +261,5 @@ pub fn main() !void {
 
     var client = try Client.init(gpa.allocator(), true);
     defer client.deinit();
-    client.run();
+    try client.run();
 }
