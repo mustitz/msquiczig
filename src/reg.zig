@@ -3,6 +3,7 @@ const MsQuic = @import("msquic.zig").MsQuic;
 const Configuration = @import("conf.zig").Configuration;
 const Settings = @import("settings.zig").Settings;
 const Connection = @import("conn.zig").Connection;
+const Listener = @import("listener.zig").Listener;
 
 pub const Registration = struct {
     handle: C.HQUIC,
@@ -92,5 +93,33 @@ pub const Registration = struct {
         };
 
         return conn;
+    }
+
+    pub fn openListener(
+        self: *const Registration,
+        ihandler: ?*const Listener.IHandler,
+        data: ?*anyopaque,
+    ) !*Listener {
+        const listener = try self.msquic.allocator.create(Listener);
+        errdefer self.msquic.allocator.destroy(listener);
+
+        var handle: C.HQUIC = undefined;
+        const status = self.msquic.api.listener_open(
+            self.handle,
+            Listener.cb,
+            listener,
+            &handle
+        );
+
+        if (C.StatusCode.failed(status)) return C.StatusCode.toError(status);
+
+        listener.* = Listener{
+            .handle = handle,
+            .msquic = self.msquic,
+            .ihandler = if (ihandler) |h| h.* else .{},
+            .data = data,
+        };
+
+        return listener;
     }
 };
