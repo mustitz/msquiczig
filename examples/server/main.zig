@@ -11,13 +11,17 @@ const MsQuic = msquiczig.MsQuic;
 const Registration = msquiczig.Registration;
 const Configuration = msquiczig.Configuration;
 const Settings = msquiczig.Settings;
+const Connection = msquiczig.Connection;
+const Listener = msquiczig.Listener;
 const CredFlags = msquiczig.CredFlags;
 const CertFile = msquiczig.CertFile;
 const CertFileProtected = msquiczig.CertFileProtected;
 const CredConfig = msquiczig.CredConfig;
+const Addr = msquiczig.Addr;
 
 const IDLE_TIMEOUT = 1000;
 const ALPNS = [_][]const u8{ "sample"};
+const SERVER_PORT = 3690;
 
 const CERT_PATH = "tls/server.cert";
 const KEY_PATH = "tls/server.key";
@@ -50,6 +54,112 @@ const Signals = struct {
     fn handler(sig: i32) callconv(.c) void {
         _ = sig;
         shutdown_semaphore.post();
+    }
+};
+
+const ServerConnHandler = struct {
+    fn onConnected(
+        conn: *Connection,
+        session_resumed: bool,
+        negotiated_alpn: []const u8,
+    ) anyerror!void {
+        _ = session_resumed;
+        _ = negotiated_alpn;
+
+        const server: *Server = @ptrCast(@alignCast(conn.data));
+        const atom = server.enter(@src(), "Server.Conn.onConnected");
+        defer server.leave(@src(), atom);
+
+        const conn_addr = @intFromPtr(conn.handle);
+        atom.?.infoFmt(@src(), "[conn][0x{x}] Connected", .{conn_addr}, .{});
+
+        try conn.sendResumptionTicket(.{}, &.{});
+        atom.?.debug(@src(), "Resumption ticket sent", .{});
+    }
+
+    fn onShutdownInitiatedByTransport(
+        conn: *Connection,
+        status: ?anyerror,
+        error_code: u64,
+    ) anyerror!void {
+        const server: *Server = @ptrCast(@alignCast(conn.data));
+        const atom = server.enter(@src(), "Server.Conn.onShutdownInitiatedByTransport");
+        defer server.leave(@src(), atom);
+
+        const conn_addr = @intFromPtr(conn.handle);
+        if (status) |err| {
+            if (err == msquiczig.MsQuicError.QzConnIdle) {
+                atom.?.infoFmt(@src(), "[0x{x}] Successfully shut down on idle.", .{conn_addr}, .{});
+            } else {
+                atom.?.infoFmt(@src(), "[0x{x}] Shut down by transport, {any}", .{conn_addr, err}, .{});
+            }
+        } else {
+            atom.?.infoFmt(@src(), "[0x{x}] Shut down by transport, error_code: 0x{x}", .{conn_addr, error_code}, .{});
+        }
+    }
+
+    fn onShutdownInitiatedByPeer(
+        conn: *Connection,
+        error_code: u64,
+    ) anyerror!void {
+        const server: *Server = @ptrCast(@alignCast(conn.data));
+        const atom = server.enter(@src(), "Server.Conn.onShutdownInitiatedByPeer");
+        defer server.leave(@src(), atom);
+
+        const conn_addr = @intFromPtr(conn.handle);
+        atom.?.infoFmt(@src(), "[0x{x}] Shut down by peer, 0x{x}",
+            .{conn_addr, error_code}, .{});
+    }
+
+    fn onShutdownComplete(
+        conn: *Connection,
+        handshake_completed: bool,
+        peer_acknowledged_shutdown: bool,
+        app_close_in_progress: bool,
+    ) anyerror!void {
+        _ = handshake_completed;
+        _ = peer_acknowledged_shutdown;
+        _ = app_close_in_progress;
+
+        const server: *Server = @ptrCast(@alignCast(conn.data));
+        const atom = server.enter(@src(), "Server.Conn.onShutdownComplete");
+        defer server.leave(@src(), atom);
+
+        const conn_addr = @intFromPtr(conn.handle);
+        atom.?.infoFmt(@src(), "[0x{x}] All done", .{conn_addr}, .{});
+
+        conn.destroy();
+        atom.?.debug(@src(), "Connection closed & destroyed", .{});
+    }
+};
+
+const ServerListenerHandler = struct {
+    fn onNewConnection(
+        listener: *Listener,
+        info: *const Listener.NewConnInfo,
+        conn: *Connection,
+    ) anyerror!void {
+        const server: *Server = @ptrCast(@alignCast(listener.data));
+        const atom = server.enter(@src(), "Server.Listener.onNewConnection");
+        defer server.leave(@src(), atom);
+
+        const listener_addr = @intFromPtr(listener.handle);
+        atom.?.infoFmt(@src(), "[0x{x}] New connection from {any} to {any}",
+            .{listener_addr, info.remote_address, info.local_address}, .{});
+        atom.?.infoFmt(@src(), "  QUIC version: 0x{x}", .{info.quic_version}, .{});
+        atom.?.infoFmt(@src(), "  Server name: {s}", .{info.server_name}, .{});
+        atom.?.infoFmt(@src(), "  Negotiated ALPN: {s}", .{info.negotiated_alpn}, .{});
+
+        conn.data = server;
+        conn.ihandler.onConnected = ServerConnHandler.onConnected;
+        conn.ihandler.onShutdownInitiatedByTransport = ServerConnHandler.onShutdownInitiatedByTransport;
+        conn.ihandler.onShutdownInitiatedByPeer = ServerConnHandler.onShutdownInitiatedByPeer;
+        conn.ihandler.onShutdownComplete = ServerConnHandler.onShutdownComplete;
+
+        const conn_addr = @intFromPtr(conn.handle);
+
+        try conn.setConf(&server.conf);
+        atom.?.debug(@src(), "[0x{x}] Connection configured & accepted", .{conn_addr});
     }
 };
 
@@ -173,12 +283,31 @@ const Server = struct {
         }
     }
 
-    fn run(self: *Server) void {
+    fn run(self: *Server) !void {
         const atom = self.enter(@src(), "Server.run");
         defer self.leave(@src(), atom);
 
         Signals.init();
         defer Signals.deinit();
+
+        const server_listener_handler = Listener.IHandler{
+            .onNewConnection = ServerListenerHandler.onNewConnection,
+        };
+
+        const listener = try self.reg.openListener(&server_listener_handler, self);
+        defer {
+            listener.destroy();
+            atom.?.debug(@src(), "Listener closed & destroyed", .{});
+        }
+
+        atom.?.debug(@src(), "Listener opened successfully", .{});
+
+        var addr = Addr.init();
+        addr.setFamily(.unspec);
+        addr.setPort(SERVER_PORT);
+
+        try listener.start(&ALPNS, &addr);
+        atom.?.debug(@src(), "Listener started successfully", .{});
 
         atom.?.notice(@src(), "Server is running. Press Ctrl+C to stop...", .{});
         Signals.wait();
@@ -202,5 +331,5 @@ pub fn main() !void {
 
     var server = try Server.init(gpa.allocator());
     defer server.deinit();
-    server.run();
+    try server.run();
 }
