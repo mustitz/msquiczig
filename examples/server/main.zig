@@ -27,6 +27,32 @@ var stdout_tracer = quarkz.cosmos.FileRecorder{
     .min_level = .trace,
 };
 
+const Signals = struct {
+    var shutdown_semaphore = std.Thread.Semaphore{};
+
+    pub fn init() void {
+        var sa: std.posix.Sigaction = .{
+            .handler = .{ .handler = &handler },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+
+        std.posix.sigaction(std.posix.SIG.INT, &sa, null);
+    }
+
+    pub fn deinit() void {
+    }
+
+    pub fn wait() void {
+        shutdown_semaphore.wait();
+    }
+
+    fn handler(sig: i32) callconv(.c) void {
+        _ = sig;
+        shutdown_semaphore.post();
+    }
+};
+
 const Server = struct {
     allocator: Allocator,
     cosmos: *Cosmos,
@@ -151,7 +177,12 @@ const Server = struct {
         const atom = self.enter(@src(), "Server.run");
         defer self.leave(@src(), atom);
 
-        atom.?.notice(@src(), "Running!", .{});
+        Signals.init();
+        defer Signals.deinit();
+
+        atom.?.notice(@src(), "Server is running. Press Ctrl+C to stop...", .{});
+        Signals.wait();
+        atom.?.notice(@src(), "Received SIGINT, shutting down gracefully...", .{});
     }
 };
 
