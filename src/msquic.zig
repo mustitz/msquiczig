@@ -36,6 +36,45 @@ pub const Addr = struct {
     }
 };
 
+pub const Chunk = struct {
+    const CHUNK_ALIGN = @alignOf(Chunk);
+    const CHUNK_SZ = @sizeOf(Chunk);
+    const ALIGNMENT = std.mem.Alignment.fromByteUnits(CHUNK_ALIGN);
+
+    allocator: Allocator,
+    size: usize,
+
+    pub fn init(allocator: Allocator, size: usize) !*Chunk {
+        const total_size = CHUNK_SZ + size;
+        const buffer = try allocator.alignedAlloc(u8, ALIGNMENT, total_size);
+
+        const chunk: *Chunk = @ptrCast(buffer.ptr);
+        chunk.* = Chunk{
+            .allocator = allocator,
+            .size = size,
+        };
+        return chunk;
+    }
+
+    fn getSelfPtr(self: *Chunk) [*]align(CHUNK_ALIGN) u8 {
+        return @as([*]align(CHUNK_ALIGN) u8, @ptrCast(self));
+    }
+
+    pub fn getPtr(self: *Chunk) [*]u8 {
+        return @as([*]u8, @ptrCast(self)) + CHUNK_SZ;
+    }
+
+    pub fn destroy(self: *Chunk) void {
+        const total_size = CHUNK_SZ + self.size;
+        const buffer = self.getSelfPtr()[0..total_size];
+        self.allocator.free(buffer);
+    }
+
+    pub fn getSlice(self: *Chunk) []u8 {
+        return self.getPtr()[0..self.size];
+    }
+};
+
 pub const MsQuic = struct {
     allocator: Allocator = undefined,
     lib: ?std.DynLib = null,
@@ -102,4 +141,20 @@ test "test libmsquic.so loading" {
     var msquic = MsQuic{};
     defer msquic.deinit();
     try msquic.init(std.testing.allocator, libmsquic_path);
+}
+
+test "Chunk init, write, read, destroy" {
+    const allocator = std.testing.allocator;
+
+    const message = "Hello, QUIC World!";
+    const chunk = try Chunk.init(allocator, message.len);
+    defer chunk.destroy();
+
+    const slice1 = chunk.getSlice();
+    try std.testing.expectEqual(message.len, slice1.len);
+
+    @memcpy(slice1, message);
+
+    const slice2 = chunk.getSlice();
+    try std.testing.expectEqualStrings(message, slice2);
 }

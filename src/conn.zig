@@ -2,6 +2,7 @@ const C = @import("header.zig").C;
 const MsQuic = @import("msquic.zig").MsQuic;
 const Addr = @import("msquic.zig").Addr;
 const Configuration = @import("conf.zig").Configuration;
+const Stream = @import("stream.zig").Stream;
 
 pub const Connection = struct {
     handle: C.HQUIC,
@@ -46,7 +47,7 @@ pub const Connection = struct {
 
         const OnPeerStreamStarted = ?*const fn(
             conn: *Connection,
-            stream: C.HQUIC,
+            stream: *Stream,
             flags: C.StreamOpenFlags,
         ) anyerror!void;
 
@@ -174,6 +175,36 @@ pub const Connection = struct {
         );
 
         if (C.StatusCode.failed(status)) return C.StatusCode.toError(status);
+    }
+
+    pub fn openStream(
+        self: *const Connection,
+        flags: C.StreamOpenFlags,
+        ihandler: ?*const Stream.IHandler,
+        data: ?*anyopaque,
+    ) !*Stream {
+        const stream = try self.msquic.allocator.create(Stream);
+        errdefer self.msquic.allocator.destroy(stream);
+
+        var handle: C.HQUIC = undefined;
+        const status = self.msquic.api.stream_open(
+            self.handle,
+            flags,
+            Stream.cb,
+            stream,
+            &handle
+        );
+
+        if (C.StatusCode.failed(status)) return C.StatusCode.toError(status);
+
+        stream.* = Stream{
+            .handle = handle,
+            .msquic = self.msquic,
+            .ihandler = if (ihandler) |h| h.* else .{},
+            .data = data,
+        };
+
+        return stream;
     }
 
     pub fn cb(
@@ -337,9 +368,23 @@ pub const Connection = struct {
     ) C.QUIC_STATUS {
         const onPeerStreamStarted = handler.onPeerStreamStarted
             orelse return C.StatusCode.QUIC_STATUS_SUCCESS;
+
+        const stream = self.msquic.allocator.create(Stream) catch |err|
+            return C.StatusCode.fromError(err);
+
+        stream.* = Stream{
+            .handle = data.stream,
+            .msquic = self.msquic,
+            .ihandler = .{},
+            .data = null,
+        };
+
+        self.msquic.api.set_context(data.stream, stream);
+        self.msquic.api.set_callback_handler(data.stream, @ptrCast(&Stream.cb), stream);
+
         onPeerStreamStarted(
             self,
-            data.stream,
+            stream,
             data.flags,
         ) catch |err| return C.StatusCode.fromError(err);
         return C.StatusCode.QUIC_STATUS_SUCCESS;
