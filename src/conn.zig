@@ -2,6 +2,7 @@ const C = @import("header.zig").C;
 const MsQuic = @import("msquic.zig").MsQuic;
 const Addr = @import("msquic.zig").Addr;
 const Configuration = @import("conf.zig").Configuration;
+const Stream = @import("stream.zig").Stream;
 
 pub const Connection = struct {
     handle: C.HQUIC,
@@ -174,6 +175,36 @@ pub const Connection = struct {
         );
 
         if (C.StatusCode.failed(status)) return C.StatusCode.toError(status);
+    }
+
+    pub fn openStream(
+        self: *const Connection,
+        flags: C.StreamOpenFlags,
+        ihandler: ?*const Stream.IHandler,
+        data: ?*anyopaque,
+    ) !*Stream {
+        const stream = try self.msquic.allocator.create(Stream);
+        errdefer self.msquic.allocator.destroy(stream);
+
+        var handle: C.HQUIC = undefined;
+        const status = self.msquic.api.stream_open(
+            self.handle,
+            flags,
+            Stream.cb,
+            stream,
+            &handle
+        );
+
+        if (C.StatusCode.failed(status)) return C.StatusCode.toError(status);
+
+        stream.* = Stream{
+            .handle = handle,
+            .msquic = self.msquic,
+            .ihandler = if (ihandler) |h| h.* else .{},
+            .data = data,
+        };
+
+        return stream;
     }
 
     pub fn cb(

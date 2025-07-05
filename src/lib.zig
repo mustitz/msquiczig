@@ -17,6 +17,9 @@ pub const Connection = conn.Connection;
 pub const listener = @import("listener.zig");
 pub const Listener = listener.Listener;
 
+pub const stream = @import("stream.zig");
+pub const Stream = stream.Stream;
+
 pub const header = @import("header.zig");
 pub const CredFlags = header.C.CredFlags;
 pub const CertHash = header.C.CertHash;
