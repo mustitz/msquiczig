@@ -16,6 +16,7 @@ const Settings = msquiczig.Settings;
 const CredConfig = msquiczig.CredConfig;
 const CredFlags = msquiczig.CredFlags;
 const Connection = msquiczig.Connection;
+const Stream = msquiczig.Stream;
 
 const IDLE_TIMEOUT = 1000;
 const ALPNS = [_][]const u8{ "sample"};
@@ -41,8 +42,7 @@ const ClientConnHandler = struct {
             "[0x{x}] Connected: alpn={s}, resumed={}",
             .{conn_addr, negotiated_alpn, session_resumed}, .{});
 
-        // TBD: ClientSend(Connection);
-        atom.?.notice(@src(), "TBD: ClientSend implementation", .{});
+        try client.send(conn);
     }
 
     fn onShutdownInitiatedByTransport(
@@ -114,6 +114,37 @@ const ClientConnHandler = struct {
         const conn_addr = @intFromPtr(conn.handle);
         atom.?.infoFmt(@src(), "[conn][0x{x}] Ideal Processor is: {}, Partition Index: {}",
             .{conn_addr, ideal_processor, partition_index}, .{});
+    }
+};
+
+
+const ClientStreamHandler = struct {
+    fn onShutdownComplete(
+        stream: *msquiczig.Stream,
+        conn_shutdown: bool,
+        app_close_in_progress: bool,
+        conn_shutdown_by_app: bool,
+        conn_closed_remotely: bool,
+        conn_error_code: u64,
+        conn_close_status: ?anyerror,
+    ) anyerror!void {
+        _ = conn_shutdown;
+        _ = conn_shutdown_by_app;
+        _ = conn_closed_remotely;
+        _ = conn_error_code;
+        _ = conn_close_status;
+
+        const client: *Client = @ptrCast(@alignCast(stream.data));
+        const atom = client.enter(@src(), "Client.Stream.onShutdownComplete");
+        defer client.leave(@src(), atom);
+
+        const stream_addr = @intFromPtr(stream.handle);
+        atom.?.infoFmt(@src(), "[strm][0x{x}] All done", .{stream_addr}, .{});
+
+        if (!app_close_in_progress) {
+            stream.destroy();
+            atom.?.debug(@src(), "Stream closed & destroyed", .{});
+        }
     }
 };
 
@@ -218,6 +249,27 @@ const Client = struct {
             a.traceFmt(loc, "<----- {s}", .{a.name}, .{});
             a.destroy();
         }
+    }
+
+    fn send(self: *Client, conn: *Connection) !void {
+        const atom = self.enter(@src(), "Client.send");
+        defer self.leave(@src(), atom);
+
+        const client_stream_handler = msquiczig.Stream.IHandler{
+            .onShutdownComplete = ClientStreamHandler.onShutdownComplete,
+        };
+
+        const stream = try conn.openStream(.{}, &client_stream_handler, self);
+        errdefer stream.destroy();
+
+        atom.?.debug(@src(), "Stream opened successfully", .{});
+
+        try stream.start(.{});
+        atom.?.debug(@src(), "Stream started successfully", .{});
+
+        // const send_data = [_][]const u8{"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"};
+        // try stream.send(&send_data, .{ .fin = true }, null);
+        // atom.?.debug(@src(), "Data sent successfully", .{});
     }
 
     fn run(self: *Client) !void {
