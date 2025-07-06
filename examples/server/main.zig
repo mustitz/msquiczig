@@ -13,11 +13,14 @@ const Configuration = msquiczig.Configuration;
 const Settings = msquiczig.Settings;
 const Connection = msquiczig.Connection;
 const Listener = msquiczig.Listener;
+const Stream = msquiczig.Stream;
 const CredFlags = msquiczig.CredFlags;
 const CertFile = msquiczig.CertFile;
 const CertFileProtected = msquiczig.CertFileProtected;
 const CredConfig = msquiczig.CredConfig;
 const Addr = msquiczig.Addr;
+const StreamOpenFlags = msquiczig.StreamOpenFlags;
+const ReceiveFlags = msquiczig.ReceiveFlags;
 
 const IDLE_TIMEOUT = 1000;
 const ALPNS = [_][]const u8{ "sample"};
@@ -54,6 +57,55 @@ const Signals = struct {
     fn handler(sig: i32) callconv(.c) void {
         _ = sig;
         shutdown_semaphore.post();
+    }
+};
+
+const ServerStreamHandler = struct {
+    fn onReceive(
+        stream: *Stream,
+        absolute_offset: u64,
+        buffers: []const []const u8,
+        flags: ReceiveFlags,
+    ) anyerror!void {
+        const server: *Server = @ptrCast(@alignCast(stream.data));
+        const atom = server.enter(@src(), "Server.Stream.onReceive");
+        defer server.leave(@src(), atom);
+
+        const stream_addr = @intFromPtr(stream.handle);
+        atom.?.infoFmt(@src(),
+            "[0x{x}] Received {} buffers at offset {}: flags={any}",
+           .{stream_addr, buffers.len, absolute_offset, flags}, .{});
+
+        for (buffers, 0..) |buffer, i| {
+            if (buffer.len <= 20) {
+                atom.?.debugFmt(@src(), "  Buffer[{}]: {} bytes, msg={}", .{i, buffer.len, std.zig.fmtEscapes(buffer)}, .{});
+            } else {
+                const slice = buffer[0..20];
+                atom.?.debugFmt(@src(), "  Buffer[{}]: {} bytes, msg={}", .{i, buffer.len, std.zig.fmtEscapes(slice)}, .{});
+            }
+        }
+    }
+
+    fn onShutdownComplete(
+        stream: *Stream,
+        conn_shutdown: bool,
+        app_close_in_progress: bool,
+        conn_shutdown_by_app: bool,
+        conn_closed_remotely: bool,
+        conn_error_code: u64,
+        conn_close_status: ?anyerror,
+    ) anyerror!void {
+        const server: *Server = @ptrCast(@alignCast(stream.data));
+        const atom = server.enter(@src(), "Server.Stream.onShutdownComplete");
+        defer server.leave(@src(), atom);
+
+        const stream_addr = @intFromPtr(stream.handle);
+        atom.?.infoFmt(@src(),
+            "[0x{x}] Shutdown complete: conn_shutdown={}, app_close_in_progress={}, conn_shutdown_by_app={}, conn_closed_remotely={}, conn_error_code=0x{x}, conn_close_status={any}",
+            .{stream_addr, conn_shutdown, app_close_in_progress, conn_shutdown_by_app, conn_closed_remotely, conn_error_code, conn_close_status}, .{});
+
+        stream.destroy();
+        atom.?.debug(@src(), "Stream closed & destroyed", .{});
     }
 };
 
@@ -131,6 +183,26 @@ const ServerConnHandler = struct {
         conn.destroy();
         atom.?.debug(@src(), "Connection closed & destroyed", .{});
     }
+
+    fn onPeerStreamStarted(
+        conn: *Connection,
+        stream: *Stream,
+        flags: StreamOpenFlags,
+    ) anyerror!void {
+        const server: *Server = @ptrCast(@alignCast(conn.data));
+        const atom = server.enter(@src(), "Server.Conn.onPeerStreamStarted");
+        defer server.leave(@src(), atom);
+
+        const conn_addr = @intFromPtr(conn.handle);
+        const stream_addr = @intFromPtr(stream.handle);
+        atom.?.infoFmt(@src(),
+            "[0x{x}] Peer started stream [0x{x}], flags: {any}",
+            .{conn_addr, stream_addr, flags}, .{});
+
+        stream.data = server;
+        stream.ihandler.onReceive = ServerStreamHandler.onReceive;
+        stream.ihandler.onShutdownComplete = ServerStreamHandler.onShutdownComplete;
+    }
 };
 
 const ServerListenerHandler = struct {
@@ -155,6 +227,7 @@ const ServerListenerHandler = struct {
         conn.ihandler.onShutdownInitiatedByTransport = ServerConnHandler.onShutdownInitiatedByTransport;
         conn.ihandler.onShutdownInitiatedByPeer = ServerConnHandler.onShutdownInitiatedByPeer;
         conn.ihandler.onShutdownComplete = ServerConnHandler.onShutdownComplete;
+        conn.ihandler.onPeerStreamStarted = ServerConnHandler.onPeerStreamStarted;
 
         const conn_addr = @intFromPtr(conn.handle);
 
