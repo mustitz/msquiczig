@@ -16,6 +16,8 @@ const Settings = msquiczig.Settings;
 const CredConfig = msquiczig.CredConfig;
 const CredFlags = msquiczig.CredFlags;
 const Connection = msquiczig.Connection;
+const Stream = msquiczig.Stream;
+const Chunk = msquiczig.Chunk;
 
 const IDLE_TIMEOUT = 1000;
 const ALPNS = [_][]const u8{ "sample"};
@@ -41,8 +43,7 @@ const ClientConnHandler = struct {
             "[0x{x}] Connected: alpn={s}, resumed={}",
             .{conn_addr, negotiated_alpn, session_resumed}, .{});
 
-        // TBD: ClientSend(Connection);
-        atom.?.notice(@src(), "TBD: ClientSend implementation", .{});
+        client.send(conn) catch {};
     }
 
     fn onShutdownInitiatedByTransport(
@@ -116,6 +117,54 @@ const ClientConnHandler = struct {
         atom.?.infoFmt(@src(),
             "[0x{x}] Ideal Processor is: {}, Partition Index: {}",
             .{conn_addr, ideal_processor, partition_index}, .{});
+    }
+};
+
+
+const ClientStreamHandler = struct {
+    fn onShutdownComplete(
+        stream: *Stream,
+        conn_shutdown: bool,
+        app_close_in_progress: bool,
+        conn_shutdown_by_app: bool,
+        conn_closed_remotely: bool,
+        conn_error_code: u64,
+        conn_close_status: ?anyerror,
+    ) anyerror!void {
+        const client: *Client = @ptrCast(@alignCast(stream.data));
+        const atom = client.enter(@src(), "Client.Stream.onShutdownComplete");
+        defer client.leave(@src(), atom);
+
+        const stream_addr = @intFromPtr(stream.handle);
+        atom.?.infoFmt(@src(),
+            "[0x{x}] Shutdown complete: conn_shutdown={}, app_close_in_progress={}, conn_shutdown_by_app={}, conn_closed_remotely={}, conn_error_code=0x{x}, conn_close_status={any}",
+            .{stream_addr, conn_shutdown, app_close_in_progress, conn_shutdown_by_app, conn_closed_remotely, conn_error_code, conn_close_status},
+            .{});
+
+        if (!app_close_in_progress) {
+            stream.destroy();
+            atom.?.debug(@src(), "Stream closed & destroyed", .{});
+        }
+    }
+
+    fn onSendComplete(
+        stream: *Stream,
+        canceled: bool,
+        client_context: ?*anyopaque,
+    ) anyerror!void {
+        const client: *Client = @ptrCast(@alignCast(stream.data));
+        const atom = client.enter(@src(), "Client.Stream.onSendComplete");
+        defer client.leave(@src(), atom);
+
+        var chunk: ?*Chunk = @ptrCast(@alignCast(client_context));
+        const chunk_addr = @intFromPtr(chunk);
+        defer chunk.?.destroy();
+
+        const stream_addr = @intFromPtr(stream.handle);
+        atom.?.infoFmt(@src(),
+            "[0x{x}] Send: canceled={}, client_context=0x{x}",
+            .{stream_addr, canceled, chunk_addr},
+            .{});
     }
 };
 
@@ -220,6 +269,35 @@ const Client = struct {
             a.traceFmt(loc, "<----- {s}", .{a.name}, .{});
             a.destroy();
         }
+    }
+
+    fn send(self: *Client, conn: *Connection) !void {
+        const atom = self.enter(@src(), "Client.send");
+        defer self.leave(@src(), atom);
+
+        const client_stream_handler = Stream.IHandler{
+            .onShutdownComplete = ClientStreamHandler.onShutdownComplete,
+            .onSendComplete = ClientStreamHandler.onSendComplete,
+        };
+
+        const stream = try conn.openStream(.{}, &client_stream_handler, self);
+        errdefer stream.destroy();
+
+        // stream.ihandler.onShutdownComplete = ClientStreamHandler.onShutdownComplete;
+        atom.?.debug(@src(), "Stream opened successfully", .{});
+
+        try stream.start(.{});
+        atom.?.debug(@src(), "Stream started successfully", .{});
+
+        const message = "Hello, Server!";
+        const chunk = try Chunk.init(self.allocator, message.len);
+        errdefer chunk.destroy();
+
+        @memcpy(chunk.getSlice(), message);
+
+        const send_data = [_][]const u8{chunk.getSlice()};
+        try stream.send(&send_data, .{ .fin = true }, chunk);
+        atom.?.debug(@src(), "Data sent successfully", .{});
     }
 
     fn run(self: *Client) !void {
