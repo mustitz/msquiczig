@@ -252,6 +252,22 @@ const ServerConnHandler = struct {
         stream.ihandler.onPeerSendAborted = ServerStreamHandler.onPeerSendAborted;
         stream.ihandler.onShutdownComplete = ServerStreamHandler.onShutdownComplete;
     }
+
+    fn onResumed(
+            conn: *Connection,
+            resumption_state: []const u8,
+    ) anyerror!void {
+        _ = resumption_state;
+
+        const server: *Server = @ptrCast(@alignCast(conn.data));
+        const atom = server.enter(@src(), "Server.Conn.onResumed");
+        defer server.leave(@src(), atom);
+
+        const conn_addr = @intFromPtr(conn.handle);
+        atom.?.infoFmt(@src(),
+            "[0x{x}] Connection resumed!",
+            .{conn_addr});
+    }
 };
 
 const ServerListenerHandler = struct {
