@@ -30,6 +30,7 @@ pub const CertFileProtected = header.C.CertFileProtected;
 pub const CertPkcs12 = header.C.CertPkcs12;
 pub const CredConfig = header.C.CredConfig;
 pub const StreamOpenFlags = header.C.StreamOpenFlags;
+pub const StreamShutdownFlags = header.C.StreamShutdownFlags;
 pub const ReceiveFlags = header.C.ReceiveFlags;
 
 pub const errors = @import("errors.zig");

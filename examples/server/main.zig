@@ -20,7 +20,9 @@ const CertFileProtected = msquiczig.CertFileProtected;
 const CredConfig = msquiczig.CredConfig;
 const Addr = msquiczig.Addr;
 const StreamOpenFlags = msquiczig.StreamOpenFlags;
+const StreamShutdownFlags = msquiczig.StreamShutdownFlags;
 const ReceiveFlags = msquiczig.ReceiveFlags;
+const Chunk = msquiczig.Chunk;
 
 const IDLE_TIMEOUT = 1000;
 const ALPNS = [_][]const u8{ "sample"};
@@ -61,6 +63,26 @@ const Signals = struct {
 };
 
 const ServerStreamHandler = struct {
+    fn onSendComplete(
+        stream: *Stream,
+        canceled: bool,
+        server_context: ?*anyopaque,
+    ) anyerror!void {
+        const server: *Server = @ptrCast(@alignCast(stream.data));
+        const atom = server.enter(@src(), "Server.Stream.onSendComplete");
+        defer server.leave(@src(), atom);
+
+        var chunk: ?*Chunk = @ptrCast(@alignCast(server_context));
+        const chunk_addr = @intFromPtr(chunk);
+        defer chunk.?.destroy();
+
+        const stream_addr = @intFromPtr(stream.handle);
+        atom.?.infoFmt(@src(),
+            "[0x{x}] Send: canceled={}, server_context=0x{x}",
+            .{stream_addr, canceled, chunk_addr},
+            .{});
+    }
+
     fn onReceive(
         stream: *Stream,
         absolute_offset: u64,
@@ -84,6 +106,30 @@ const ServerStreamHandler = struct {
                 atom.?.debugFmt(@src(), "  Buffer[{}]: {} bytes, msg={}", .{i, buffer.len, std.zig.fmtEscapes(slice)}, .{});
             }
         }
+    }
+
+    fn onPeerSendShutdown(
+        stream: *Stream,
+    ) anyerror!void {
+        const server: *Server = @ptrCast(@alignCast(stream.data));
+        const atom = server.enter(@src(), "Server.Stream.onPeerSendShutdown");
+        defer server.leave(@src(), atom);
+
+        try server.send(stream);
+        atom.?.debug(@src(), "Server send successfully", .{});
+    }
+
+    fn onPeerSendAborted(
+        stream: *Stream,
+        error_code: u64,
+    ) anyerror!void {
+        _ = error_code;
+        const server: *Server = @ptrCast(@alignCast(stream.data));
+        const atom = server.enter(@src(), "Server.Stream.onPeerSendAborted");
+        defer server.leave(@src(), atom);
+
+        try stream.shutdown(StreamShutdownFlags.ABORT, 0);
+        atom.?.debug(@src(), "Successful stream shutdown (abort)", .{});
     }
 
     fn onShutdownComplete(
@@ -200,7 +246,10 @@ const ServerConnHandler = struct {
             .{conn_addr, stream_addr, flags}, .{});
 
         stream.data = server;
+        stream.ihandler.onSendComplete = ServerStreamHandler.onSendComplete;
         stream.ihandler.onReceive = ServerStreamHandler.onReceive;
+        stream.ihandler.onPeerSendShutdown = ServerStreamHandler.onPeerSendShutdown;
+        stream.ihandler.onPeerSendAborted = ServerStreamHandler.onPeerSendAborted;
         stream.ihandler.onShutdownComplete = ServerStreamHandler.onShutdownComplete;
     }
 };
@@ -354,6 +403,21 @@ const Server = struct {
             a.traceFmt(loc, "<----- {s}", .{a.name}, .{});
             a.destroy();
         }
+    }
+
+    fn send(self: *Server, stream: *Stream) !void {
+        const atom = self.enter(@src(), "Server.send");
+        defer self.leave(@src(), atom);
+
+        const message = "Hello, Client!";
+        const chunk = try Chunk.init(self.allocator, message.len);
+        errdefer chunk.destroy();
+
+        @memcpy(chunk.getSlice(), message);
+
+        const send_data = [_][]const u8{chunk.getSlice()};
+        try stream.send(&send_data, .{ .fin = true }, chunk);
+        atom.?.debug(@src(), "Data sent successfully", .{});
     }
 
     fn run(self: *Server) !void {
