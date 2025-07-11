@@ -1,8 +1,13 @@
+const std = @import("std");
+const msquic = @import("msquic.zig");
+
 const C = @import("header.zig").C;
-const MsQuic = @import("msquic.zig").MsQuic;
-const Addr = @import("msquic.zig").Addr;
+const MsQuic = msquic.MsQuic;
+const Addr = msquic.Addr;
+const SendContext = msquic.SendContext;
 const Configuration = @import("conf.zig").Configuration;
 const Stream = @import("stream.zig").Stream;
+const WrapperError = @import("errors.zig").WrapperError;
 
 pub const Connection = struct {
     handle: C.HQUIC,
@@ -205,6 +210,37 @@ pub const Connection = struct {
         };
 
         return stream;
+    }
+
+    pub fn sendDatagram(
+        self: *const Connection,
+        data: []const []const u8,
+        flags: C.SendFlags,
+        user: ?*anyopaque,
+    ) !void {
+        const count = std.math.cast(u32, data.len) orelse {
+            return WrapperError.QzBufOverflow;
+        };
+
+        const context = try SendContext.init(self.msquic, count, user);
+
+        for (data, 0..) |item, i| {
+            context.buffers[i].length = @intCast(item.len);
+            context.buffers[i].buffer = @constCast(item.ptr);
+        }
+
+        const status = self.msquic.api.datagram_send(
+            self.handle,
+            context.buffers,
+            context.count,
+            flags,
+            context,
+        );
+
+        if (C.StatusCode.failed(status)) {
+            context.destroy();
+            return C.StatusCode.toError(status);
+        }
     }
 
     pub fn cb(
