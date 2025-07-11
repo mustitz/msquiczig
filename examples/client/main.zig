@@ -18,6 +18,8 @@ const CredFlags = msquiczig.CredFlags;
 const Connection = msquiczig.Connection;
 const Stream = msquiczig.Stream;
 const Chunk = msquiczig.Chunk;
+const ReceiveFlags = msquiczig.ReceiveFlags;
+const StreamShutdownFlags = msquiczig.StreamShutdownFlags;
 
 const IDLE_TIMEOUT = 1000;
 const ALPNS = [_][]const u8{ "sample"};
@@ -166,6 +168,54 @@ const ClientStreamHandler = struct {
             .{stream_addr, canceled, chunk_addr},
             .{});
     }
+
+    fn onReceive(
+        stream: *Stream,
+        absolute_offset: u64,
+        buffers: []const []const u8,
+        flags: ReceiveFlags,
+    ) anyerror!void {
+        const client: *Client = @ptrCast(@alignCast(stream.data));
+        const atom = client.enter(@src(), "Client.Stream.onReceive");
+        defer client.leave(@src(), atom);
+
+        const stream_addr = @intFromPtr(stream.handle);
+        atom.?.infoFmt(@src(),
+            "[0x{x}] Received {} buffers at offset {}: flags={any}",
+           .{stream_addr, buffers.len, absolute_offset, flags}, .{});
+
+        for (buffers, 0..) |buffer, i| {
+            if (buffer.len <= 20) {
+                atom.?.debugFmt(@src(), "  Buffer[{}]: {} bytes, msg={}", .{i, buffer.len, std.zig.fmtEscapes(buffer)}, .{});
+            } else {
+                const slice = buffer[0..20];
+                atom.?.debugFmt(@src(), "  Buffer[{}]: {} bytes, msg={}", .{i, buffer.len, std.zig.fmtEscapes(slice)}, .{});
+            }
+        }
+    }
+
+    fn onPeerSendShutdown(
+        stream: *Stream,
+    ) anyerror!void {
+        const client: *Client = @ptrCast(@alignCast(stream.data));
+        const atom = client.enter(@src(), "Client.Stream.onPeerSendShutdown");
+        defer client.leave(@src(), atom);
+
+        atom.?.debug(@src(), "Peer shutdown", .{});
+    }
+
+    fn onPeerSendAborted(
+        stream: *Stream,
+        error_code: u64,
+    ) anyerror!void {
+        _ = error_code;
+        const client: *Client = @ptrCast(@alignCast(stream.data));
+        const atom = client.enter(@src(), "Client.Stream.onPeerSendAborted");
+        defer client.leave(@src(), atom);
+
+        try stream.shutdown(StreamShutdownFlags.ABORT, 0);
+        atom.?.debug(@src(), "Peer aborted", .{});
+    }
 };
 
 
@@ -278,6 +328,9 @@ const Client = struct {
         const client_stream_handler = Stream.IHandler{
             .onShutdownComplete = ClientStreamHandler.onShutdownComplete,
             .onSendComplete = ClientStreamHandler.onSendComplete,
+            .onReceive = ClientStreamHandler.onReceive,
+            .onPeerSendShutdown = ClientStreamHandler.onPeerSendShutdown,
+            .onPeerSendAborted = ClientStreamHandler.onPeerSendAborted,
         };
 
         const stream = try conn.openStream(.{}, &client_stream_handler, self);
