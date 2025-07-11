@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 
 const C = @import("header.zig").C;
 const MsQuic = @import("msquic.zig").MsQuic;
+const SendContext = @import("msquic.zig").SendContext;
 const WrapperError = @import("errors.zig").WrapperError;
 
 pub const Stream = struct {
@@ -10,47 +11,6 @@ pub const Stream = struct {
     msquic: *MsQuic,
     ihandler: IHandler,
     data: ?*anyopaque = null,
-
-    const SendContext = extern struct {
-        const Self = @This();
-        const ALIGN = @alignOf(Self);
-        const SIZE = @sizeOf(Self);
-        const ALIGNMENT = std.mem.Alignment.fromByteUnits(ALIGN);
-
-        count: u32,
-        buffers: [*]C.Buffer,
-        user: ?*anyopaque,
-        msquic: *const MsQuic,
-        first_buffer: C.Buffer,
-
-        pub fn init(msquic: *const MsQuic, count: u32, user: ?*anyopaque) !*SendContext {
-            const additional = if (count > 1) count - 1 else 0;
-            const total_size = SIZE + additional * @sizeOf(C.Buffer);
-            const buffer = try msquic.allocator.alignedAlloc(u8, ALIGNMENT, total_size);
-
-            const self: *Self = @ptrCast(buffer.ptr);
-            self.* = Self{
-                .count = count,
-                .buffers = @ptrCast(&self.first_buffer),
-                .user = user,
-                .msquic = msquic,
-                .first_buffer = undefined,
-            };
-
-            return self;
-        }
-
-        fn getSelfPtr(self: *Self) [*]align(ALIGN) u8 {
-            return @as([*]align(ALIGN) u8, @ptrCast(self));
-        }
-
-        pub fn destroy(self: *Self) void {
-            const additional = if (self.count > 1) self.count - 1 else 0;
-            const total_size = SIZE + additional * @sizeOf(C.Buffer);
-            const buffer = self.getSelfPtr()[0..total_size];
-            self.msquic.allocator.free(buffer);
-        }
-    };
 
     pub const IHandler = struct {
         const OnStartComplete = ?*const fn(
@@ -405,27 +365,3 @@ pub const Stream = struct {
         return C.StatusCode.QUIC_STATUS_SUCCESS;
     }
 };
-
-test "SendContext basic" {
-    const msquic = MsQuic{
-        .allocator = std.testing.allocator,
-    };
-
-    const context = try Stream.SendContext.init(&msquic, 3, null);
-    defer context.destroy();
-
-    try std.testing.expect(context.count == 3);
-
-    context.buffers[0].length = 12;
-    context.buffers[1].length = 0xFFFFFFFF;
-    context.buffers[2].length = 0xDEAD;
-
-    var data: [7]u8 = .{ 1, 2, 3, 4, 5, 6, 7 };
-    context.buffers[0].buffer = @ptrCast(&data[6]);
-    context.buffers[1].buffer = @ptrCast(&data[2]);
-    context.buffers[2].buffer = @ptrCast(&data[0]);
-
-    try std.testing.expectEqual(context.buffers[0].length, 12);
-    try std.testing.expectEqual(context.buffers[1].length, 0xFFFFFFFF);
-    try std.testing.expectEqual(context.buffers[2].length, 0xDEAD);
-}
